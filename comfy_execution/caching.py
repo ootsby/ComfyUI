@@ -148,6 +148,8 @@ class CacheKeySetInputSignature(CacheKeySet):
                     order_mapping[ancestor_id] = len(ancestors) - 1
                     self.get_ordered_ancestry_internal(dynprompt, ancestor_id, ancestors, order_mapping)
 
+INCOMPLETE = object()
+
 class BasicCache:
     def __init__(self, key_class, enable_providers=False):
         self.key_class = key_class
@@ -204,14 +206,25 @@ class BasicCache:
         if not self.initialized:
             return None
         cache_key = self.cache_key_set.get_data_key(node_id)
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-        return None
+        value = self.cache.get(cache_key)
+        if value is INCOMPLETE:
+            return None
+        return value
 
     def set_local(self, node_id, value):
         assert self.initialized
         cache_key = self.cache_key_set.get_data_key(node_id)
         self.cache[cache_key] = value
+
+    def mark_incomplete(self, node_id):
+        assert self.initialized
+        cache_key = self.cache_key_set.get_data_key(node_id)
+        if cache_key is not None:
+            self.cache[cache_key] = INCOMPLETE
+
+    def is_incomplete(self, node_id):
+        assert self.initialized
+        return self.cache.get(self.cache_key_set.get_data_key(node_id)) is INCOMPLETE
 
     async def _set_immediate(self, node_id, value):
         assert self.initialized
@@ -225,8 +238,11 @@ class BasicCache:
             return None
         cache_key = self.cache_key_set.get_data_key(node_id)
 
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+        value = self.cache.get(cache_key)
+        if value is INCOMPLETE:
+            return None
+        if value is not None:
+            return value
 
         external_result = await self._check_providers_lookup(node_id, cache_key)
         if external_result is not None:
@@ -403,6 +419,15 @@ class HierarchicalCache(BasicCache):
         assert cache is not None
         BasicCache.set_local(cache, node_id, value)
 
+    def mark_incomplete(self, node_id):
+        cache = self._get_cache_for(node_id)
+        if cache is not None:
+            BasicCache.mark_incomplete(cache, node_id)
+
+    def is_incomplete(self, node_id):
+        cache = self._get_cache_for(node_id)
+        return cache is not None and BasicCache.is_incomplete(cache, node_id)
+
     async def ensure_subcache_for(self, node_id, children_ids):
         cache = self._get_cache_for(node_id)
         assert cache is not None
@@ -433,6 +458,12 @@ class NullCache:
 
     def set_local(self, node_id, value):
         pass
+
+    def mark_incomplete(self, node_id):
+        pass
+
+    def is_incomplete(self, node_id):
+        return False
 
     async def ensure_subcache_for(self, node_id, children_ids):
         return self
@@ -555,6 +586,8 @@ class RAMPressureCache(LRUCache):
         clean_list = []
 
         for key, cache_entry in self.cache.items():
+            if cache_entry is INCOMPLETE:
+                continue
             if not free_active and self.used_generation[key] == self.generation:
                 continue
 

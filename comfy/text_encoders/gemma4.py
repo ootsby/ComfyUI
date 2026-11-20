@@ -421,7 +421,8 @@ class Gemma4Transformer(nn.Module):
                 device=device, dtype=dtype)
 
     def get_dynamic_vram__units(self):
-        return (list(self.layers), []) if self.graph_dynamic_vbar_blocks else ([], [])
+        # the tied embedding is the head and runs every decode step: fault it resident ahead of the body.
+        return ([self.embed_tokens, *self.layers], []) if self.graph_dynamic_vbar_blocks else ([], [])
 
     def get_past_len(self, past_key_values):
         for kv in past_key_values:
